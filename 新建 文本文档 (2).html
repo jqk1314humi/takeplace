@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>投票结果</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #ffffff;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-family: 'Inter', 'Segoe UI', 'Helvetica Neue', 'Arial', sans-serif;
+            font-weight: 400;
+        }
+
+        /* 极简容器：纯白背景，无边框，无阴影，无装饰 */
+        .chart-container {
+            background: #ffffff;
+            padding: 20px 0 10px 0;
+            display: inline-block;
+        }
+
+        canvas {
+            display: block;
+            margin: 0 auto;
+            background: #ffffff;
+            box-shadow: none;
+            border: none;
+            outline: none;
+        }
+
+        /* 完全没有多余装饰，只有白色背景和canvas图表 */
+    </style>
+</head>
+<body>
+<div class="chart-container">
+    <canvas id="barCanvas" width="800" height="550" style="width:800px; height:550px;"></canvas>
+</div>
+
+<script>
+    (function() {
+        // ---------- 图表参数 ----------
+        const canvas = document.getElementById('barCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // 调整边距：避免柱体与坐标轴重叠，同时为底部标签预留充足空间
+        const margin = {
+            top: 50,      // 顶部留出空间给柱顶数值标签
+            right: 40,
+            bottom: 75,   // 底部留出足够空间给横轴长标签（“利弊共存”等）
+            left: 70      // 左侧留出空间给纵轴百分比文字
+        };
+        
+        const chartWidth = canvas.width - margin.left - margin.right;   // 绘图区宽度
+        const chartHeight = canvas.height - margin.top - margin.bottom; // 绘图区高度
+
+        // 纵轴最大百分比 (0% ~ 100%)
+        const maxPercent = 100;
+
+        // 数据定义
+        const categories = ["会完全取代", "不会完全取代", "利弊共存"];
+        // 起始数据 (均为0%)
+        const startValues = [0, 0, 0];
+        // 终点定格数据 (百分比)
+        const endValues = [26.75, 54.68, 18.57];
+
+        // 柱子配色: 纯黑白灰商务风 (深灰, 浅灰, 中度灰)
+        const barColors = ["#2C2C2C", "#A0A0A0", "#6B6B6B"];
+        // 对应索引: 0 - 会完全取代(深灰), 1 - 不会完全取代(浅灰), 2 - 利弊共存(中度灰)
+
+        // 动画参数: 10秒匀速上升，结尾自动定格停留
+        const ANIMATION_DURATION = 10000; // 10秒
+
+        // 动画控制变量
+        let animationStartTime = null;
+        let animationFrameId = null;
+        let isAnimating = true;
+        let currentValues = [...startValues];
+
+        // ---------- 辅助函数: 线性插值 ----------
+        function interpolateValues(startArr, endArr, t) {
+            // t 范围 0~1，返回当前各值
+            const result = [];
+            for (let i = 0; i < startArr.length; i++) {
+                const val = startArr[i] + (endArr[i] - startArr[i]) * t;
+                result.push(val);
+            }
+            return result;
+        }
+
+        // ---------- 纯坐标轴 + 极简浅网格 (无多余装饰) ----------
+        function drawAxesAndGrid() {
+            ctx.save();
+            
+            // 1. 绘制纵轴浅灰色极细网格线 (极简商务，不喧宾夺主)
+            const ySteps = 5; // 0%, 20%, 40%, 60%, 80%, 100%
+            ctx.beginPath();
+            ctx.strokeStyle = "#E5E5E5";
+            ctx.lineWidth = 0.6;
+            ctx.setLineDash([4, 4]);
+            for (let i = 0; i <= ySteps; i++) {
+                const percent = (i / ySteps) * maxPercent;
+                const y = margin.top + chartHeight * (1 - percent / maxPercent);
+                ctx.moveTo(margin.left, y);
+                ctx.lineTo(margin.left + chartWidth, y);
+                ctx.stroke();
+            }
+            // 重置实线
+            ctx.setLineDash([]);
+            
+            // 2. 绘制纵轴主轴线 (黑色实线)
+            ctx.beginPath();
+            ctx.strokeStyle = "#000000";
+            ctx.lineWidth = 1.2;
+            ctx.moveTo(margin.left, margin.top);
+            ctx.lineTo(margin.left, margin.top + chartHeight);
+            ctx.stroke();
+            
+            // 3. 绘制横轴主轴线 (黑色实线)
+            ctx.beginPath();
+            ctx.moveTo(margin.left, margin.top + chartHeight);
+            ctx.lineTo(margin.left + chartWidth, margin.top + chartHeight);
+            ctx.stroke();
+            
+            // 4. 纵轴刻度标签 (黑色常规字体)
+            ctx.font = "12px 'Inter', 'Segoe UI', 'Arial', sans-serif";
+            ctx.fillStyle = "#000000";
+            ctx.textAlign = "right";
+            ctx.textBaseline = "middle";
+            for (let i = 0; i <= ySteps; i++) {
+                const percent = (i / ySteps) * maxPercent;
+                const y = margin.top + chartHeight * (1 - percent / maxPercent);
+                ctx.fillText(`${Math.round(percent)}%`, margin.left - 8, y);
+            }
+            
+            // 5. 横轴类别标签 (黑色常规字体，居中对齐于每个柱子)
+            ctx.font = "11px 'Inter', 'Segoe UI', 'Arial', sans-serif";
+            ctx.fillStyle = "#000000";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "top";
+            
+            const barCount = categories.length;
+            const unitWidth = chartWidth / barCount;
+            
+            for (let i = 0; i < barCount; i++) {
+                // 每个类别的中心点 X 坐标
+                const centerX = margin.left + i * unitWidth + unitWidth / 2;
+                const labelY = margin.top + chartHeight + 8;
+                ctx.fillText(categories[i], centerX, labelY);
+            }
+            
+            ctx.restore();
+        }
+
+        // ---------- 绘制柱子 + 实时跟随数值标签 (修正边距与定位) ----------
+        function drawBarsAndLabels(currentVals) {
+            const barCount = categories.length;
+            const unitWidth = chartWidth / barCount;
+            // 柱子宽度占比为65%，留出35%作为柱间空白，视觉更舒适且不重叠
+            const barWidth = unitWidth * 0.65;
+            
+            for (let i = 0; i < barCount; i++) {
+                const percentValue = currentVals[i];
+                // 限制百分比范围 [0, 100]
+                const clampedPercent = Math.min(maxPercent, Math.max(0, percentValue));
+                const barHeight = (clampedPercent / maxPercent) * chartHeight;
+                
+                // 关键修正：计算柱子起始 X 坐标，确保所有柱子均在 Y 轴右侧且精确居中于类别标签
+                // 每个类别的起始偏移: margin.left + i * unitWidth
+                // 柱子在该类别区域内的左缩进: (unitWidth - barWidth) / 2
+                const x = margin.left + i * unitWidth + (unitWidth - barWidth) / 2;
+                const y = margin.top + chartHeight - barHeight;
+                
+                // 绘制柱子 (纯色填充，无描边，极简扁平)
+                ctx.fillStyle = barColors[i];
+                ctx.fillRect(x, y, barWidth, barHeight);
+                
+                // ----- 数值标签：柱子顶端实时跟随，定格后固定显示百分比 -----
+                const labelX = x + barWidth / 2;
+                let labelY = y - 6; // 默认位于柱顶上方6px
+                
+                // 防止标签超出画布顶部边界
+                if (labelY < margin.top - 5) {
+                    labelY = margin.top + 12;  // 如果柱顶过于接近顶部，标签微下调，确保可读
+                }
+                // 当柱子高度非常矮时(动画起始阶段)，避免标签与横轴标签重叠，仍显示在柱顶上方适当位置
+                if (barHeight < 12 && clampedPercent < 5) {
+                    labelY = y - 4;
+                    if (labelY < margin.top + 2) labelY = margin.top + 14;
+                }
+                
+                ctx.font = "12px 'Inter', 'Segoe UI', 'Arial', sans-serif";
+                ctx.fillStyle = "#000000";
+                ctx.textAlign = "center";
+                ctx.textBaseline = "bottom";
+                // 保留两位小数的百分比格式（例如 26.75%）
+                const displayText = `${clampedPercent.toFixed(2)}%`;
+                ctx.fillText(displayText, labelX, labelY);
+            }
+        }
+        
+        // 完整绘图函数 (整合所有绘制模块)
+        function drawChart(currentVals) {
+            // 清空画布，纯白背景
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = "#FFFFFF";
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // 1. 绘制极简轴线与辅助网格
+            drawAxesAndGrid();
+            // 2. 绘制柱子和顶端数值标签
+            drawBarsAndLabels(currentVals);
+        }
+        
+        // ---------- 匀速线性上升动画 (无卡顿、无回弹、无特效) ----------
+        function startAnimation() {
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId);
+                animationFrameId = null;
+            }
+            animationStartTime = performance.now();
+            isAnimating = true;
+            
+            function animate(now) {
+                if (!isAnimating) return;
+                const elapsed = now - animationStartTime;
+                let progress = Math.min(1, elapsed / ANIMATION_DURATION);
+                // 线性插值计算当前数值
+                const newVals = interpolateValues(startValues, endValues, progress);
+                for (let i = 0; i < newVals.length; i++) {
+                    currentValues[i] = newVals[i];
+                }
+                // 基于当前数值绘制图表
+                drawChart(currentValues);
+                
+                if (progress < 1) {
+                    // 继续动画
+                    animationFrameId = requestAnimationFrame(animate);
+                } else {
+                    // 动画结束：精确对齐终点数值，并定格停留（无限时长，满足“结尾定格停留2秒”以上）
+                    for (let i = 0; i < endValues.length; i++) {
+                        currentValues[i] = endValues[i];
+                    }
+                    drawChart(currentValues);
+                    isAnimating = false;
+                    animationFrameId = null;
+                    // 至此动画完成，终点数据完全展示并永久定格，完美符合2秒或多于2秒的定格需求
+                }
+            }
+            
+            // 先绘制起始状态（全0%），避免首帧跳动
+            drawChart(startValues);
+            // 开启动画循环
+            animationFrameId = requestAnimationFrame(animate);
+        }
+        
+        // ---------- 页面加载后执行 ----------
+        window.addEventListener('load', () => {
+            // 确保初始数据为起始值
+            currentValues = [...startValues];
+            drawChart(currentValues);
+            // 微延迟启动，保证渲染线程稳定
+            setTimeout(() => {
+                startAnimation();
+            }, 20);
+        });
+        
+        // 可选窗口resize保护：由于canvas宽高固定，无需额外操作；保留干净的黑白商务体验
+    })();
+</script>
+</body>
+</html>
